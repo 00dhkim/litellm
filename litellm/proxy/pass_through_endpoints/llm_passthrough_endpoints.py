@@ -20,6 +20,7 @@ from litellm._logging import verbose_proxy_logger
 from litellm.constants import BEDROCK_AGENT_RUNTIME_PASS_THROUGH_ROUTES
 from litellm.llms.vertex_ai.vertex_llm_base import VertexBase
 from litellm.proxy._types import *
+from litellm.proxy.auth.google_oauth import maybe_authenticate_google_oauth
 from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.auth.user_api_key_auth import user_api_key_auth
 from litellm.proxy.common_utils.http_parsing_utils import (
@@ -187,14 +188,7 @@ async def gemini_proxy_route(
     """
     [Docs](https://docs.litellm.ai/docs/pass_through/google_ai_studio)
     """
-    ## CHECK FOR LITELLM API KEY IN THE QUERY PARAMS - ?..key=LITELLM_API_KEY
-    google_ai_studio_api_key = request.query_params.get("key") or request.headers.get(
-        "x-goog-api-key"
-    )
-
-    user_api_key_dict = await user_api_key_auth(
-        request=request, api_key=f"Bearer {google_ai_studio_api_key}"
-    )
+    from litellm.proxy.proxy_server import general_settings
 
     base_target_url = (
         os.getenv("GEMINI_API_BASE") or "https://generativelanguage.googleapis.com"
@@ -209,18 +203,45 @@ async def gemini_proxy_route(
     base_url = httpx.URL(base_target_url)
     updated_url = base_url.copy_with(path=encoded_endpoint)
 
-    # Add or update query parameters
-    gemini_api_key: Optional[str] = passthrough_endpoint_router.get_credentials(
-        custom_llm_provider="gemini",
-        region_name=None,
+    # Attempt Google OAuth passthrough first
+    user_api_key_dict: Optional[UserAPIKeyAuth] = await maybe_authenticate_google_oauth(
+        request=request,
+        general_settings=general_settings,
     )
-    if gemini_api_key is None:
-        raise Exception(
-            "Required 'GEMINI_API_KEY'/'GOOGLE_API_KEY' in environment to make pass-through calls to Google AI Studio."
-        )
-    # Merge query parameters, giving precedence to those in updated_url
+
     merged_params = dict(request.query_params)
-    merged_params.update({"key": gemini_api_key})
+    forward_headers = False
+
+    if user_api_key_dict is not None:
+        # Remove any API key query params when forwarding OAuth tokens
+        merged_params.pop("key", None)
+        forward_headers = True
+    else:
+        ## CHECK FOR LITELLM API KEY IN THE QUERY PARAMS - ?..key=LITELLM_API_KEY
+        google_ai_studio_api_key = request.query_params.get("key") or request.headers.get(
+            "x-goog-api-key"
+        )
+
+        if google_ai_studio_api_key is None:
+            raise HTTPException(
+                status_code=401,
+                detail={"error": "Missing LiteLLM API key for Gemini pass-through"},
+            )
+
+        user_api_key_dict = await user_api_key_auth(
+            request=request, api_key=f"Bearer {google_ai_studio_api_key}"
+        )
+
+        gemini_api_key: Optional[str] = passthrough_endpoint_router.get_credentials(
+            custom_llm_provider="gemini",
+            region_name=None,
+        )
+        if gemini_api_key is None:
+            raise Exception(
+                "Required 'GEMINI_API_KEY'/'GOOGLE_API_KEY' in environment to make pass-through calls to Google AI Studio."
+            )
+        # Merge query parameters, giving precedence to those in updated_url
+        merged_params.update({"key": gemini_api_key})
 
     ## check for streaming
     is_streaming_request = False
@@ -233,6 +254,7 @@ async def gemini_proxy_route(
         target=str(updated_url),
         custom_llm_provider="gemini",
         is_streaming_request=is_streaming_request,
+        _forward_headers=forward_headers,
         query_params=merged_params,
     )  # dynamically construct pass-through endpoint based on incoming path
     received_value = await endpoint_func(

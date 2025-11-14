@@ -3164,6 +3164,52 @@ class LitellmMetadataFromRequestHeaders(TypedDict, total=False):
     spend_logs_metadata: Optional[dict]
 
 
+class GoogleOAuthTokenVerificationResult(LiteLLMPydanticObjectBase):
+    """Result from verifying a Google OAuth token."""
+
+    token_type: str
+    audience: Optional[str] = None
+    client_id: Optional[str] = None
+    subject: Optional[str] = None
+    email: Optional[str] = None
+    scopes: List[str] = []
+    expires_in: Optional[int] = None
+    issued_to: Optional[str] = None
+    raw_claims: Dict[str, Any] = {}
+
+
+class GoogleOAuthPassthroughConfig(LiteLLMPydanticObjectBase):
+    """Configuration for forwarding Google OAuth credentials through LiteLLM."""
+
+    enabled: bool = False
+    allowed_audiences: Optional[List[str]] = None
+    allowed_client_ids: Optional[List[str]] = None
+    required_scopes: Optional[List[str]] = None
+    allowed_email_domains: Optional[List[str]] = None
+    allowed_emails: Optional[List[str]] = None
+    cache_ttl_seconds: int = Field(default=300, ge=0, le=86400)
+    token_info_endpoint: str = "https://oauth2.googleapis.com/tokeninfo"
+    key_alias_prefix: str = "google-oauth"
+    default_team_id: Optional[str] = None
+    default_team_alias: Optional[str] = None
+    default_org_id: Optional[str] = None
+    default_user_role: Optional[LitellmUserRoles] = None
+    models: Optional[List[str]] = None
+    allowed_routes: Optional[List[str]] = None
+    metadata: Dict[str, Any] = {}
+
+    @field_validator("allowed_email_domains", "allowed_emails", mode="before")
+    @classmethod
+    def _normalize_list(cls, value: Optional[List[str]]):
+        if value is None:
+            return value
+        normalized: List[str] = []
+        for item in value:
+            if isinstance(item, str):
+                normalized.append(item.lower())
+        return normalized
+
+
 class JWTKeyItem(TypedDict, total=False):
     kid: str
 
